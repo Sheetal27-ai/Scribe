@@ -1,2 +1,2 @@
 python-dotenv>=1.0.0
-# Add your preferred translation SDK here (e.g., google-generativeai, openai, deeppl, etc.)
+google-genai
