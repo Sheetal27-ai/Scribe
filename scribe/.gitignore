@@ -10,3 +10,5 @@ env/
 # System / Output files
 *.pdf
 test_files/output_*
+output/
+src/output/

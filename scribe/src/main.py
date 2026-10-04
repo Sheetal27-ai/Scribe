@@ -57,7 +57,7 @@ def run_v1_pipeline(pdf_path: str, target_lang: str = "Hindi"):
     print("\n=== Pipeline Execution Completed Successfully! ===")
 
 if __name__ == "__main__":
-    sample_pdf = "../test_files/sample.pdf"
+    sample_pdf = "test_files/sample.pdf"
     if os.path.exists(sample_pdf):
         run_v1_pipeline(sample_pdf, target_lang="Hindi")
     else:
