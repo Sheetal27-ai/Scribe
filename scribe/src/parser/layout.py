@@ -18,7 +18,8 @@ from typing import Dict, List, Optional, Tuple, Union
 
 import pymupdf
 
-from src.parser.figures import body_font_size, find_vector_figures
+from src.parser.figures import find_vector_figures
+from src.parser.styles import StyleProfile, block_to_markdown, build_profile
 
 # Block type codes returned by page.get_text("blocks")
 _TEXT_BLOCK = 0
@@ -38,10 +39,11 @@ class TextElement:
     """A text block with its position on the page."""
     page_num: int
     bbox: pymupdf.Rect
-    text: str
+    text: str              # plain text: used for layout logic (captions etc.)
+    markdown: str = ""     # styled text: headings, **bold**, *italic*
 
     def to_markdown(self) -> str:
-        return self.text
+        return self.markdown or self.text
 
 
 @dataclass
@@ -142,9 +144,10 @@ class LayoutExtractor:
         """Returns one reading-ordered list of elements per page."""
         pages: List[List[PageElement]] = []
         with pymupdf.open(self.pdf_path) as doc:
-            body_size = body_font_size(doc)
+            profile = build_profile(doc)
+            body_size = profile.body_size
             for page in doc:
-                text_elements = self._text_elements(page)
+                text_elements = self._text_elements(page, profile)
                 content_rect = _content_rect(text_elements, page.rect)
                 image_elements = self._image_elements(doc, page, content_rect)
                 figures, text_elements, image_elements = self._vector_figures(
@@ -172,16 +175,33 @@ class LayoutExtractor:
     # ------------------------------------------------------------------ #
     # Text
     # ------------------------------------------------------------------ #
-    def _text_elements(self, page: pymupdf.Page) -> List[TextElement]:
+    def _text_elements(self, page: pymupdf.Page, profile: StyleProfile) -> List[TextElement]:
+        """
+        Reads text at span level so font size, weight and slant survive as
+        Markdown headings and **bold** / *italic* runs.
+        """
+        try:
+            blocks = page.get_text("dict")["blocks"]
+        except Exception as e:
+            print(f"   [warn] page {page.number + 1}: cannot read text: {e}")
+            return []
+
         elements = []
-        # sort=False: we do our own ordering below.
-        for x0, y0, x1, y1, text, _block_no, block_type in page.get_text("blocks"):
-            if block_type != _TEXT_BLOCK:
+        for block in blocks:
+            if block.get("type") != _TEXT_BLOCK:
                 continue  # image blocks are handled via get_images()
-            text = " ".join(text.split())  # unwrap hard line breaks inside a block
+            try:
+                text, markdown = block_to_markdown(block, profile)
+            except Exception as e:  # odd span data: fall back to plain text
+                print(f"   [warn] page {page.number + 1}: style analysis failed: {e}")
+                text = " ".join(
+                    s.get("text", "") for l in block.get("lines", []) for s in l.get("spans", [])
+                )
+                text = " ".join(text.split())
+                markdown = ""
             if not text:
                 continue  # empty / whitespace-only blocks
-            elements.append(TextElement(page.number + 1, pymupdf.Rect(x0, y0, x1, y1), text))
+            elements.append(TextElement(page.number + 1, pymupdf.Rect(block["bbox"]), text, markdown))
         return elements
 
     # ------------------------------------------------------------------ #

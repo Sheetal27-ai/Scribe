@@ -21,7 +21,9 @@ class TranslationEngine:
 
         prompt = (
             f"Translate the following text into {self.target_lang}.\n"
-            f"CRITICAL: Do NOT translate, alter, or remove any placeholder tags formatted like ___SHIELD_X___.\n\n"
+            f"CRITICAL: Do NOT translate, alter, or remove any placeholder tags formatted like ___SHIELD_X___.\n"
+            f"Keep all Markdown formatting: leave heading markers (#, ##, ###) at the start of their line "
+            f"and keep **bold** and *italic* markers around the translated words they apply to.\n\n"
             f"Text:\n{text}"
         )
 
