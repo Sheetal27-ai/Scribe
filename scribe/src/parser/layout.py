@@ -14,9 +14,11 @@ import html
 import os
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, List, Optional, Union
+from typing import Dict, List, Optional, Tuple, Union
 
 import pymupdf
+
+from src.parser.figures import body_font_size, find_vector_figures
 
 # Block type codes returned by page.get_text("blocks")
 _TEXT_BLOCK = 0
@@ -90,6 +92,11 @@ def _width_percent(bbox: pymupdf.Rect, content_rect: pymupdf.Rect) -> int:
     return max(_MIN_WIDTH_PCT, min(100, pct))
 
 
+def _rect_inside(inner: pymupdf.Rect, outer: pymupdf.Rect, tol: float = 2.0) -> bool:
+    return (inner.x0 >= outer.x0 - tol and inner.y0 >= outer.y0 - tol
+            and inner.x1 <= outer.x1 + tol and inner.y1 <= outer.y1 + tol)
+
+
 PageElement = Union[TextElement, ImageElement]
 
 
@@ -105,6 +112,7 @@ class LayoutExtractor:
         image_subdir: Folder name for saved images (default "output_images").
         min_image_size: Images whose width or height (in pixels) is below
                     this are skipped. Filters out bullets, spacers, rules.
+        figure_dpi: Resolution for vector figures rendered from captions.
     """
 
     def __init__(
@@ -113,6 +121,7 @@ class LayoutExtractor:
         output_dir: str,
         image_subdir: str = "output_images",
         min_image_size: int = 32,
+        figure_dpi: int = 300,
     ):
         if not os.path.exists(pdf_path):
             raise FileNotFoundError(f"PDF file not found at: {pdf_path}")
@@ -121,6 +130,7 @@ class LayoutExtractor:
         self.image_subdir = image_subdir
         self.image_dir = self.output_dir / image_subdir
         self.min_image_size = min_image_size
+        self.figure_dpi = figure_dpi
 
         # xref -> relative path. A logo repeated on every page is saved once.
         self._saved: Dict[int, Optional[str]] = {}
@@ -132,11 +142,17 @@ class LayoutExtractor:
         """Returns one reading-ordered list of elements per page."""
         pages: List[List[PageElement]] = []
         with pymupdf.open(self.pdf_path) as doc:
+            body_size = body_font_size(doc)
             for page in doc:
                 text_elements = self._text_elements(page)
                 content_rect = _content_rect(text_elements, page.rect)
-                elements = text_elements + self._image_elements(doc, page, content_rect)
+                image_elements = self._image_elements(doc, page, content_rect)
+                figures, text_elements, image_elements = self._vector_figures(
+                    page, text_elements, image_elements, content_rect, body_size
+                )
+                elements = text_elements + image_elements + figures
                 pages.append(self._reading_order(elements, page.rect))
+        self._remove_unused_images(pages)
         return pages
 
     def extract_markdown(self) -> str:
@@ -167,6 +183,86 @@ class LayoutExtractor:
                 continue  # empty / whitespace-only blocks
             elements.append(TextElement(page.number + 1, pymupdf.Rect(x0, y0, x1, y1), text))
         return elements
+
+    # ------------------------------------------------------------------ #
+    # Vector figures (caption-triggered region rendering)
+    # ------------------------------------------------------------------ #
+    def _vector_figures(
+        self,
+        page: pymupdf.Page,
+        text_elements: List[TextElement],
+        image_elements: List[ImageElement],
+        content_rect: pymupdf.Rect,
+        body_size: float,
+    ) -> Tuple[List[ImageElement], List[TextElement], List[ImageElement]]:
+        """
+        Renders figures found above captions to PNG and removes the text
+        fragments and raster pieces they replace.
+
+        Returns (figure elements, remaining text, remaining raster images).
+        """
+        page_num = page.number + 1
+        regions = find_vector_figures(
+            page,
+            [t.bbox for t in text_elements],
+            [t.text for t in text_elements],
+            [i.bbox for i in image_elements],
+            body_size,
+        )
+
+        figures: List[ImageElement] = []
+        drop_text: set = set()
+        drop_images: set = set()
+        for index, region in enumerate(regions, 1):
+            # A plain embedded bitmap with no text labels around it (Figure 1
+            # in most papers) is already extracted at full native resolution;
+            # re-rendering it would only lose quality.
+            if region.image_rects and not region.has_labels:
+                continue
+
+            filename = f"page_{page_num}_fig_{index}.png"
+            try:
+                pix = page.get_pixmap(clip=region.rect, dpi=self.figure_dpi)
+                self.image_dir.mkdir(parents=True, exist_ok=True)
+                pix.save(str(self.image_dir / filename))
+            except Exception as e:
+                # Leave the text blocks in place so nothing is lost.
+                print(f"   [warn] page {page_num}: could not render Figure {region.number}: {e}")
+                continue
+
+            figures.append(ImageElement(
+                page_num,
+                region.rect,
+                f"{self.image_subdir}/{filename}",
+                f"Figure {region.number}",
+                _width_percent(region.rect, content_rect),
+            ))
+            # Labels found by the detector, plus any other block that falls
+            # entirely inside the rendered area: it is now part of the picture.
+            drop_text.update(region.label_indices)
+            drop_text.update(
+                i for i, t in enumerate(text_elements)
+                if i != region.caption_index and region.rect.contains(t.bbox)
+            )
+            # Raster pieces inside the rendered area are part of the picture too.
+            drop_images.update(
+                i for i, im in enumerate(image_elements)
+                if _rect_inside(im.bbox, region.rect)
+            )
+
+        text_elements = [t for i, t in enumerate(text_elements) if i not in drop_text]
+        image_elements = [im for i, im in enumerate(image_elements) if i not in drop_images]
+        return figures, text_elements, image_elements
+
+    def _remove_unused_images(self, pages: List[List[PageElement]]) -> None:
+        """Deletes saved raster files that ended up inside a rendered figure."""
+        used = {el.path for page in pages for el in page if isinstance(el, ImageElement)}
+        for rel_path in set(self._saved.values()):
+            if rel_path and rel_path not in used:
+                try:
+                    (self.output_dir / rel_path).unlink(missing_ok=True)
+                except OSError:
+                    pass
 
     # ------------------------------------------------------------------ #
     # Images
