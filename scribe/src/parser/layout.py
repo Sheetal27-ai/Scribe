@@ -10,6 +10,7 @@ Uses PyMuPDF (`import pymupdf`; the legacy name `fitz` is the same library).
 """
 from __future__ import annotations
 
+import html
 import os
 from dataclasses import dataclass
 from pathlib import Path
@@ -24,6 +25,10 @@ _IMAGE_BLOCK = 1
 # Formats that Markdown viewers / browsers can render directly.
 # Anything else (jpx, jbig2, tiff, CMYK data, ...) is re-encoded to PNG.
 _WEB_SAFE_EXTS = {"png", "jpg", "jpeg", "gif", "bmp", "webp"}
+
+# Display width limits for <img width="..%">, as a percentage of page width.
+_MIN_WIDTH_PCT = 15
+_DEFAULT_WIDTH_PCT = 60
 
 
 @dataclass
@@ -44,9 +49,45 @@ class ImageElement:
     bbox: pymupdf.Rect
     path: str          # path relative to the Markdown file, forward slashes
     caption: str
+    width_pct: int     # displayed width as a percentage of the page width
 
     def to_markdown(self) -> str:
-        return f"![{self.caption}]({self.path})"
+        # HTML instead of ![alt](path) so the figure keeps its size relative
+        # to the page. Markdown renderers (GitHub, VS Code, Obsidian) pass
+        # <img> through, and a percentage width scales with the viewer.
+        return (
+            f'<img src="{html.escape(self.path, quote=True)}" '
+            f'width="{self.width_pct}%" '
+            f'alt="{html.escape(self.caption, quote=True)}">'
+        )
+
+
+def _content_rect(text_elements: List["TextElement"], page_rect: pymupdf.Rect) -> pymupdf.Rect:
+    """
+    Horizontal extent of the page's text column(s), i.e. the page minus its
+    margins. A Markdown viewer's 100% is its text column, so this is the
+    right reference width. Falls back to the full page for image-only pages.
+    """
+    if not text_elements:
+        return page_rect
+    x0 = min(el.bbox.x0 for el in text_elements)
+    x1 = max(el.bbox.x1 for el in text_elements)
+    if x1 - x0 < page_rect.width * 0.3:  # a lone caption, not a real column
+        return page_rect
+    return pymupdf.Rect(x0, page_rect.y0, x1, page_rect.y1)
+
+
+def _width_percent(bbox: pymupdf.Rect, content_rect: pymupdf.Rect) -> int:
+    """
+    Image width as a share of the text-column width, rounded to a multiple
+    of 5 and clamped so small figures stay legible and nothing overflows.
+    Falls back to a sensible default if the geometry is unusable.
+    """
+    if content_rect.width <= 0 or bbox.width <= 0:
+        return _DEFAULT_WIDTH_PCT
+    pct = bbox.width / content_rect.width * 100
+    pct = int(round(pct / 5) * 5)
+    return max(_MIN_WIDTH_PCT, min(100, pct))
 
 
 PageElement = Union[TextElement, ImageElement]
@@ -92,7 +133,9 @@ class LayoutExtractor:
         pages: List[List[PageElement]] = []
         with pymupdf.open(self.pdf_path) as doc:
             for page in doc:
-                elements = self._text_elements(page) + self._image_elements(doc, page)
+                text_elements = self._text_elements(page)
+                content_rect = _content_rect(text_elements, page.rect)
+                elements = text_elements + self._image_elements(doc, page, content_rect)
                 pages.append(self._reading_order(elements, page.rect))
         return pages
 
@@ -128,7 +171,9 @@ class LayoutExtractor:
     # ------------------------------------------------------------------ #
     # Images
     # ------------------------------------------------------------------ #
-    def _image_elements(self, doc: pymupdf.Document, page: pymupdf.Page) -> List[ImageElement]:
+    def _image_elements(
+        self, doc: pymupdf.Document, page: pymupdf.Page, content_rect: pymupdf.Rect
+    ) -> List[ImageElement]:
         elements = []
         page_num = page.number + 1
         index = 0
@@ -153,7 +198,8 @@ class LayoutExtractor:
             # One element per placement (the same image can be drawn twice).
             for rect in rects:
                 caption = f"Figure (page {page_num}, image {index})"
-                elements.append(ImageElement(page_num, rect, rel_path, caption))
+                width_pct = _width_percent(rect, content_rect)
+                elements.append(ImageElement(page_num, rect, rel_path, caption, width_pct))
         return elements
 
     def _save_image(self, doc: pymupdf.Document, xref: int, page_num: int, index: int) -> Optional[str]:

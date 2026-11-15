@@ -5,7 +5,8 @@ class TextShield:
     def __init__(self):
         # Regex patterns for display math ($$...$$), inline math ($...$), and code blocks
         self.patterns = [
-            r'!\[[^\]\n]*\]\([^)\n]*\)',  # Markdown image links ![alt](path) — must come first
+            r'<img\b[^>\n]*>',            # HTML image tags <img src=".." width=".."> — must come first
+            r'!\[[^\]\n]*\]\([^)\n]*\)',  # Markdown image links ![alt](path)
             r'--- Page \d+ ---',          # Page markers (otherwise translated/renumbered)
             r'\$\$.*?\$\$',         # Display math $$ ... $$
             r'\$.*?\$',             # Inline math $ ... $
