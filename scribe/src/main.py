@@ -4,7 +4,7 @@ from pathlib import Path
 sys.path.append(str(Path(__file__).resolve().parent.parent))
 import os
 import argparse
-from src.parser.pdf_reader import PDFExtractor
+from src.parser.layout import LayoutExtractor
 from src.parser.chunker import TextChunker
 from src.parser.shield import TextShield
 from src.translator.engine import TranslationEngine
@@ -50,10 +50,12 @@ def run_v2_pipeline(input_path: str, target_lang: str, output_path: str, max_chu
     print(f"Output Target: {output_path}")
 
     # 1. Extraction
-    print("\nExtracting text from PDF...")
-    extractor = PDFExtractor(str(pdf_file))
-    raw_text = extractor.extract_text()
+    print("\n1. Extracting text and images in reading order...")
+    output_dir = os.path.dirname(output_path) or "."
+    extractor = LayoutExtractor(str(pdf_file), output_dir=output_dir)
+    raw_text = extractor.extract_markdown()
     print(f"   Extracted {len(raw_text)} characters.")
+    print(f"   Saved images to '{extractor.image_dir}'.")
 
     # 2. Chunking
     print("\n2. Chunking text...")
