@@ -45,6 +45,16 @@ p:has(> img:only-child) + p {
   opacity: 0.75;
 }
 
+/* Dividers carried over from the PDF */
+hr {
+  border: 0;
+  border-top: 1px solid rgba(127, 127, 127, 0.45);
+  margin: 1.5rem 0;
+}
+
+/* Centred blocks (title, authors, display equations): no extra gap */
+div[style*="text-align: center"] > p { margin-bottom: 0.4em; }
+
 /* Inline emphasis and references */
 strong { font-weight: 700; }
 em { font-style: italic; }

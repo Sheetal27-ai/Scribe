@@ -6,6 +6,8 @@ class TextShield:
         # Regex patterns for display math ($$...$$), inline math ($...$), and code blocks
         self.patterns = [
             r'<img\b[^>\n]*>',            # HTML image tags <img src=".." width=".."> — must come first
+            r'</?(?:div|span)\b[^>\n]*>', # layout wrappers: only the tags, the text inside is translated
+            r'<hr\b[^>\n]*>',             # horizontal rules
             r'!\[[^\]\n]*\]\([^)\n]*\)',  # Markdown image links ![alt](path)
             r'--- Page \d+ ---',          # Page markers (otherwise translated/renumbered)
             r'\$\$.*?\$\$',         # Display math $$ ... $$

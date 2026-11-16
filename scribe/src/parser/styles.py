@@ -124,6 +124,7 @@ class _BlockInfo:
     size: float          # dominant font size (by characters)
     all_bold: bool       # every letter is bold
     horizontal: bool     # all lines run left-to-right
+    color: Optional[str] = None  # dominant non-default colour (CSS), if any
 
 
 def block_to_markdown(block: dict, profile: StyleProfile) -> Tuple[str, str]:
@@ -140,8 +141,9 @@ def block_to_markdown(block: dict, profile: StyleProfile) -> Tuple[str, str]:
 
     level = heading_level(info, profile)
     if level:
-        # Headings carry no inline markup: "## **Intro**" is redundant.
-        return info.text, f"{'#' * level} {_escape(info.text)}"
+        # Headings carry no emphasis markup ("## **Intro**" is redundant),
+        # but keep a non-default colour.
+        return info.text, f"{'#' * level} {_color_wrap(_escape(info.text), info.color)}"
     return info.text, _inline_markdown(block)
 
 
@@ -171,12 +173,18 @@ def _is_size_heading(info: _BlockInfo, body: float) -> bool:
     return info.all_bold or info.size >= body * 1.3
 
 
+_INHERIT = object()  # colour placeholder for whitespace runs
+
+
 def _inline_markdown(block: dict) -> str:
-    """Joins spans into one line, wrapping bold/italic runs in ** / *."""
-    runs: List[List] = []  # [text, bold, italic]
+    """
+    Joins spans into one line. Bold/italic runs are wrapped in ** / *, and
+    runs in a non-default colour in <span style="color: rgb(...)">.
+    """
+    runs: List[List] = []  # [text, bold, italic, colour]
     for li, line in enumerate(block.get("lines", [])):
         if li and runs:
-            runs.append([" ", None, None])  # line break -> space
+            runs.append([" ", None, None, _INHERIT])  # line break -> space
         for span in line.get("spans", []):
             text = span.get("text", "")
             if not text:
@@ -185,21 +193,44 @@ def _inline_markdown(block: dict) -> str:
                 style = (None, None)  # inherit neighbour style: no marker churn
             else:
                 style = (is_bold(span), is_italic(span))
-            runs.append([text, *style])
+            # Colour is a real property of every glyph, punctuation included,
+            # so only pure whitespace borrows it from its neighbours.
+            colour = span_color(span) if text.strip() else _INHERIT
+            runs.append([text, *style, colour])
 
     # Style-neutral runs (spaces, punctuation, math, footnote marks) join a
     # style only when sandwiched by it: "**Q, K and V**" stays one run, but a
     # trailing "∗" after a bold name stays outside: "**Ashish Vaswani**∗".
     for i, run in enumerate(runs):
-        if run[1] is not None:
-            continue
-        before = next(((r[1], r[2]) for r in reversed(runs[:i]) if r[1] is not None), None)
-        after = next(((r[1], r[2]) for r in runs[i + 1:] if r[1] is not None), None)
-        run[1], run[2] = before if before == after and before else (False, False)
+        if run[1] is None:
+            before = next(((r[1], r[2]) for r in reversed(runs[:i]) if r[1] is not None), None)
+            after = next(((r[1], r[2]) for r in runs[i + 1:] if r[1] is not None), None)
+            run[1], run[2] = before if before == after and before else (False, False)
+        if run[3] is _INHERIT:
+            before = next((r[3] for r in reversed(runs[:i]) if r[3] is not _INHERIT), None)
+            after = next((r[3] for r in runs[i + 1:] if r[3] is not _INHERIT), None)
+            run[3] = before if before == after else None
 
-    # Merge neighbours with the same style, then wrap.
+    # Group by colour first so a red sentence with one bold word becomes one
+    # <span> with ** inside, not three separate spans.
+    groups: List[Tuple[Optional[str], List[List]]] = []
+    for run in runs:
+        if groups and groups[-1][0] == run[3]:
+            groups[-1][1].append(run)
+        else:
+            groups.append((run[3], [run]))
+
+    out = []
+    for colour, group in groups:
+        text = _emphasis_markdown(group)
+        out.append(_color_wrap(text, colour))
+    return _tidy("".join(out))
+
+
+def _emphasis_markdown(runs: List[List]) -> str:
+    """Merges same-style neighbours and wraps them in ** / * / ***."""
     merged: List[List] = []
-    for text, bold, italic in runs:
+    for text, bold, italic, _ in runs:
         if merged and merged[-1][1] == bold and merged[-1][2] == italic:
             merged[-1][0] += text
         else:
@@ -213,7 +244,37 @@ def _inline_markdown(block: dict) -> str:
             marker = ""
         out.append(_wrap(_escape(text), marker))
     # Runs keep their own whitespace, so "Vaswani∗" is not split into "Vaswani ∗".
-    return _tidy("".join(out))
+    return "".join(out)
+
+
+# ---------------------------------------------------------------------- #
+# Colour
+# ---------------------------------------------------------------------- #
+def span_color(span: dict) -> Optional[str]:
+    """
+    CSS colour for a span, or None for "default text colour".
+
+    PyMuPDF gives sRGB as one int (0xRRGGBB). Near-black is treated as the
+    default so the viewer's theme colour is used (keeps dark mode readable);
+    near-white is dropped too, as it would vanish on a light background.
+    """
+    value = span.get("color", 0)
+    if not isinstance(value, int):
+        return None
+    r, g, b = (value >> 16) & 0xFF, (value >> 8) & 0xFF, value & 0xFF
+    if max(r, g, b) < 0x40 or min(r, g, b) > 0xF0:
+        return None
+    return f"rgb({r}, {g}, {b})"
+
+
+def _color_wrap(text: str, colour: Optional[str]) -> str:
+    """Wraps text in a coloured <span>, keeping outer whitespace outside."""
+    core = text.strip()
+    if not colour or not core:
+        return text
+    lead = text[: len(text) - len(text.lstrip())]
+    trail = text[len(text.rstrip()):]
+    return f'{lead}<span style="color: {colour};">{core}</span>{trail}'
 
 
 def _wrap(text: str, marker: str) -> str:
@@ -250,16 +311,19 @@ def _block_info(block: dict) -> Optional[_BlockInfo]:
         return None
 
     sizes: Counter = Counter()
+    colours: Counter = Counter()
     letters = bold_letters = 0
     for span in _spans(block):
         n = sum(c.isalpha() for c in span["text"])
         sizes[span["size"]] += len(span["text"].strip())
+        colours[span_color(span)] += len(span["text"].strip())
         if not is_superscript(span):
             letters += n
             bold_letters += n if is_bold(span) else 0
     size = sizes.most_common(1)[0][0] if sizes else 0.0
     horizontal = all(abs(line.get("dir", (1, 0))[1]) < 1e-3 and line.get("dir", (1, 0))[0] > 0 for line in lines)
-    return _BlockInfo(text, size, letters > 0 and bold_letters == letters, horizontal)
+    colour = colours.most_common(1)[0][0] if colours else None
+    return _BlockInfo(text, size, letters > 0 and bold_letters == letters, horizontal, colour)
 
 
 def _spans(block: dict):

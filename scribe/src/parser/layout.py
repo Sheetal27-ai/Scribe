@@ -18,7 +18,8 @@ from typing import Dict, List, Optional, Tuple, Union
 
 import pymupdf
 
-from src.parser.figures import find_vector_figures
+from src.parser.decorations import find_horizontal_rules, is_centered, is_page_number
+from src.parser.figures import CAPTION_RE, find_vector_figures
 from src.parser.styles import StyleProfile, block_to_markdown, build_profile
 
 # Block type codes returned by page.get_text("blocks")
@@ -40,10 +41,26 @@ class TextElement:
     page_num: int
     bbox: pymupdf.Rect
     text: str              # plain text: used for layout logic (captions etc.)
-    markdown: str = ""     # styled text: headings, **bold**, *italic*
+    markdown: str = ""     # styled text: headings, **bold**, *italic*, colour
+    centered: bool = False # sits in the horizontal middle of the page
 
     def to_markdown(self) -> str:
-        return self.markdown or self.text
+        body = self.markdown or self.text
+        if not self.centered:
+            return body
+        # Blank lines around the content end the HTML block, so Markdown
+        # inside (headings, **bold**) is still parsed by CommonMark renderers.
+        return f'<div style="text-align: center;">\n\n{body}\n\n</div>'
+
+
+@dataclass
+class RuleElement:
+    """A horizontal divider line drawn on the page."""
+    page_num: int
+    bbox: pymupdf.Rect
+
+    def to_markdown(self) -> str:
+        return "<hr>"
 
 
 @dataclass
@@ -99,7 +116,7 @@ def _rect_inside(inner: pymupdf.Rect, outer: pymupdf.Rect, tol: float = 2.0) -> 
             and inner.x1 <= outer.x1 + tol and inner.y1 <= outer.y1 + tol)
 
 
-PageElement = Union[TextElement, ImageElement]
+PageElement = Union[TextElement, ImageElement, RuleElement]
 
 
 class LayoutExtractor:
@@ -153,7 +170,9 @@ class LayoutExtractor:
                 figures, text_elements, image_elements = self._vector_figures(
                     page, text_elements, image_elements, content_rect, body_size
                 )
-                elements = text_elements + image_elements + figures
+                text_elements = self._apply_alignment(page, text_elements)
+                rules = self._rules(page, text_elements, image_elements + figures)
+                elements = text_elements + image_elements + figures + rules
                 pages.append(self._reading_order(elements, page.rect))
         self._remove_unused_images(pages)
         return pages
@@ -203,6 +222,40 @@ class LayoutExtractor:
                 continue  # empty / whitespace-only blocks
             elements.append(TextElement(page.number + 1, pymupdf.Rect(block["bbox"]), text, markdown))
         return elements
+
+    # ------------------------------------------------------------------ #
+    # Alignment and dividers
+    # ------------------------------------------------------------------ #
+    @staticmethod
+    def _apply_alignment(page: pymupdf.Page, text_elements: List[TextElement]) -> List[TextElement]:
+        """
+        Drops page numbers and marks page-centred blocks (titles, author
+        lines, display equations). Figure captions are left alone: the
+        stylesheet already centres them via `img + p`, which a wrapper
+        <div> would break.
+        """
+        kept = []
+        for el in text_elements:
+            if is_page_number(el.text, el.bbox, page.rect):
+                continue  # "3" at the foot of the page is noise in Markdown
+            el.centered = (
+                not CAPTION_RE.match(el.text)
+                and is_centered(el.bbox, page.rect)
+            )
+            kept.append(el)
+        return kept
+
+    @staticmethod
+    def _rules(
+        page: pymupdf.Page,
+        text_elements: List[TextElement],
+        pictures: List[ImageElement],
+    ) -> List[RuleElement]:
+        """Horizontal dividers, ignoring those inside figures and images."""
+        # The widest text block is a full text line: the reference length.
+        text_width = max((el.bbox.width for el in text_elements), default=page.rect.width)
+        rects = find_horizontal_rules(page, text_width, exclude=[p.bbox for p in pictures])
+        return [RuleElement(page.number + 1, r) for r in rects]
 
     # ------------------------------------------------------------------ #
     # Vector figures (caption-triggered region rendering)
