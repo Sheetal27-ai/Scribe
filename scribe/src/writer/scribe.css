@@ -1,0 +1,51 @@
+/* Scribe reading styles: injected at the top of every translated paper.
+   Colours are inherited from the viewer's theme (works in light and dark). */
+
+/* Container: comfortable reading width, Devanagari-capable font stack */
+body, .markdown-body {
+  max-width: 800px;
+  margin: 0 auto;
+  padding: 2rem;
+  font-family: "Noto Sans Devanagari", "Nirmala UI", "Mangal", "Kohinoor Devanagari",
+               -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  font-size: 17px;
+  line-height: 1.75;            /* room for Devanagari matras above and below */
+  text-rendering: optimizeLegibility;
+  overflow-wrap: break-word;    /* long URLs and arXiv ids in references */
+}
+
+p { margin: 0 0 1em; }
+
+/* Headings: clear scale, tight to the text they introduce */
+h1, h2, h3, h4 { line-height: 1.35; margin: 2em 0 0.6em; }
+h1 { font-size: 2em;    font-weight: 700; margin-top: 0.5em; text-align: center; }
+h2 { font-size: 1.5em;  font-weight: 700; padding-bottom: 0.3em;
+     border-bottom: 1px solid rgba(127, 127, 127, 0.3); }
+h3 { font-size: 1.25em; font-weight: 600; }
+h4 { font-size: 1.05em; font-weight: 600; }
+
+/* Figures: keep the width="N%" from Scribe, never overflow, centre */
+img {
+  max-width: 100%;
+  height: auto;
+  display: block;
+  margin: 1.5rem auto 0.5rem;
+}
+
+/* Captions: the paragraph right after a figure.
+   `img + p` when the <img> is its own HTML block (CommonMark, VS Code, GitHub);
+   `p:has(> img) + p` for renderers that wrap the image in a paragraph. */
+img + p,
+p:has(> img:only-child) + p {
+  max-width: 90%;
+  margin: 0 auto 1.75rem;
+  text-align: center;
+  font-size: 0.9em;
+  line-height: 1.6;
+  opacity: 0.75;
+}
+
+/* Inline emphasis and references */
+strong { font-weight: 700; }
+em { font-style: italic; }
+a { overflow-wrap: anywhere; }

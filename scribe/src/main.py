@@ -36,9 +36,15 @@ def parse_args():
         default=12000, 
         help="Max character count per chunk (default: 12000)"
     )
+    parser.add_argument(
+        "--no-style",
+        action="store_true",
+        help="Write plain Markdown without the reading-style <style> block"
+    )
     return parser.parse_args()
 
-def run_v2_pipeline(input_path: str, target_lang: str, output_path: str, max_chunk_size: int):
+def run_v2_pipeline(input_path: str, target_lang: str, output_path: str, max_chunk_size: int,
+                    styled: bool = True):
     pdf_file = Path(input_path)
     if not pdf_file.exists():
         print(f"Error: Input file '{input_path}' does not exist.")
@@ -79,7 +85,7 @@ def run_v2_pipeline(input_path: str, target_lang: str, output_path: str, max_chu
     # 4. Writing Output
     print("\n4. Exporting translated document...")
     full_translation = "\n\n".join(translated_chunks)
-    FileWriter.save_markdown(full_translation, output_path)
+    FileWriter.save_markdown(full_translation, output_path, styled=styled)
     print(f"\n=== Success! Output saved to '{output_path}' ===")
 
 if __name__ == "__main__":
@@ -88,5 +94,6 @@ if __name__ == "__main__":
         input_path=args.input,
         target_lang=args.lang,
         output_path=args.output,
-        max_chunk_size=args.chunk_size
+        max_chunk_size=args.chunk_size,
+        styled=not args.no_style
     )
